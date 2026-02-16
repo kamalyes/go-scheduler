@@ -8,7 +8,7 @@ require (
 	github.com/kamalyes/go-logger v0.4.6-0.20251220131326-ff4bf447209b
 	github.com/kamalyes/go-sqlbuilder v0.3.6-0.20251226032117-4cf0dffdff8b
 	github.com/kamalyes/go-toolbox v0.11.87-0.20251226131952-5cab3b04b910
-	github.com/redis/go-redis/v9 v9.17.2
+	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
@@ -43,6 +43,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
