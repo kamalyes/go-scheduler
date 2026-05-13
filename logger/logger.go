@@ -22,14 +22,12 @@ type Logger = gologger.ILogger
 
 // NewSchedulerLogger 创建带前缀的 Scheduler 日志器
 func NewSchedulerLogger(prefix string) Logger {
-	config := gologger.DefaultConfig().
+	return gologger.New().
 		WithPrefix(prefix).
 		WithLevel(gologger.INFO).
 		WithShowCaller(false).
 		WithColorful(true).
 		WithTimeFormat(time.RFC3339)
-
-	return gologger.NewLogger(config)
 }
 
 // NewNoOpLogger 创建空日志器(用于测试)
