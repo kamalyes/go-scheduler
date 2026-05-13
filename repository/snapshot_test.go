@@ -376,17 +376,17 @@ func TestExecutionSnapshotRepository_DeleteExpired(t *testing.T) {
 		{
 			name:      "delete older than 24 hours",
 			before:    time.Now().Add(-24 * time.Hour),
-			wantCount: 2,
+			wantCount: 2, // old1(-48h) 和 old2(-36h) 被删除，recent(-12h) 保留
 		},
 		{
-			name:      "delete older than 1 hour (none)",
+			name:      "delete older than 1 hour (all)",
 			before:    time.Now().Add(-1 * time.Hour),
-			wantCount: 0,
+			wantCount: 3, // 所有数据都超过1小时，全部删除
 		},
 		{
-			name:      "delete older than 100 hours (all)",
+			name:      "delete older than 100 hours (none)",
 			before:    time.Now().Add(-100 * time.Hour),
-			wantCount: 3, // 所有3条数据都会被删除
+			wantCount: 0, // 最老数据48小时，不到100小时，不删除
 		},
 	}
 

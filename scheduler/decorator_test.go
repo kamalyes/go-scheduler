@@ -44,7 +44,8 @@ func TestRecoverShouldCatchPanic(t *testing.T) {
 	err := wrapped.Execute(context.Background())
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "任务 panic: test panic")
+	assert.Contains(t, err.Error(), "task panicked")
+	assert.Contains(t, err.Error(), "test panic")
 }
 
 // TestRecoverShouldNotAffectNormalJob 测试不影响正常任务
