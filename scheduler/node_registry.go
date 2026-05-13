@@ -31,6 +31,13 @@ type NodeInfo struct {
 	RunningJobs   []string  `json:"running_jobs"`   // 正在执行的任务列表
 }
 
+// MarshalBinary 实现 encoding.BinaryMarshaler，供 go-redis 在 SET/HSET 时序列化
+// SmartCache.Set 会将 value 直接传给 redis.Set，若不实现该接口 go-redis 会报错：
+// "redis: can't marshal *scheduler.NodeInfo (implement encoding.BinaryMarshaler)"
+func (n *NodeInfo) MarshalBinary() ([]byte, error) {
+	return json.Marshal(n)
+}
+
 // NodeRegistry 节点注册器(基于 Redis)
 type NodeRegistry struct {
 	redis             redis.UniversalClient      // 直接使用 Redis 客户端
@@ -126,8 +133,21 @@ func (n *NodeRegistry) GetActiveNodes(ctx context.Context) ([]*NodeInfo, error) 
 		// SmartCache 的 TTL 机制会自动过滤过期节点
 		// 这里只需要获取当前节点信息
 		if data, err := n.cache.GetNodeInfo(ctx, n.nodeID); err == nil {
-			if node, ok := data.(*NodeInfo); ok {
-				return []*NodeInfo{node}, nil
+			// SmartCache.Get 底层调用 redis.Get，返回的是 JSON 字符串
+			// 需要手动反序列化为 *NodeInfo
+			switch v := data.(type) {
+			case *NodeInfo:
+				return []*NodeInfo{v}, nil
+			case string:
+				var node NodeInfo
+				if json.Unmarshal([]byte(v), &node) == nil {
+					return []*NodeInfo{&node}, nil
+				}
+			case []byte:
+				var node NodeInfo
+				if json.Unmarshal(v, &node) == nil {
+					return []*NodeInfo{&node}, nil
+				}
 			}
 		}
 		// 如果当前节点信息获取失败，返回空列表

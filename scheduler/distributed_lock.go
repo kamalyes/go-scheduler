@@ -1,4 +1,4 @@
-﻿/*
+/*
  * @Author: kamalyes 501893067@qq.com
  * @Date: 2025-12-23 21:45:00
  * @LastEditors: kamalyes 501893067@qq.com
@@ -13,14 +13,21 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kamalyes/go-cachex"
+	"github.com/kamalyes/go-toolbox/pkg/mathx"
 	"github.com/kamalyes/kronos-scheduler/job"
+	"github.com/kamalyes/kronos-scheduler/logger"
 )
 
 // WithCachexLock 使用 go-cachex LockManager 的分布式锁装饰器
 // 集成了看门狗机制，自动续期，确保任务在集群中只执行一次
-func WithCachexLock(lockMgr *cachex.LockManager) JobWrapper {
+//
+// 行为：使用非阻塞 TryLock，同一调度时刻只有一个 Pod 抢锁成功并执行，
+// 其他 Pod 抢锁失败后立即跳过本轮，不会阻塞等待（避免多 Pod 串行执行同一任务）
+func WithCachexLock(lockMgr *cachex.LockManager, log Logger) JobWrapper {
+	log = mathx.IF(log == nil, logger.NewNoOpLogger(), log)
 	return func(j job.Job) job.Job {
 		return &wrappedJob{
 			name:        j.Name(),
@@ -31,14 +38,24 @@ func WithCachexLock(lockMgr *cachex.LockManager) JobWrapper {
 				// 使用 LockManager 获取锁(自动支持看门狗)
 				lock := lockMgr.GetLock(lockKey)
 
-				// 尝试获取锁
-				if err := lock.Lock(ctx); err != nil {
-					// 锁被其他节点持有，跳过本次执行
+				// 非阻塞 TryLock：抢锁失败立即跳过本轮调度
+				// 避免阻塞式 Lock 导致多个 Pod 串行执行同一任务
+				acquired, err := lock.TryLock(ctx)
+				if err != nil {
+					return fmt.Errorf("%w: %s: %v", ErrLockAcquireFailed, j.Name(), err)
+				}
+				if !acquired {
+					// 锁被其他节点持有，跳过本次执行（非错误，正常竞争行为）
+					log.InfoContext(ctx, "分布式锁被其他节点持有，跳过本轮: %s", j.Name())
 					return nil
 				}
 
-				// 确保释放锁
-				defer lock.Unlock(ctx)
+				// 确保释放锁，记录释放异常（不影响任务执行结果）
+				defer func() {
+					if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+						log.WarnContext(ctx, "分布式锁释放异常: %s, err=%v", j.Name(), unlockErr)
+					}
+				}()
 
 				// 执行任务(LockManager 自动处理看门狗续期)
 				return j.Execute(ctx)

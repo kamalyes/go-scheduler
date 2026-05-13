@@ -14,10 +14,12 @@ package scheduler
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/kamalyes/go-cachex"
 	"github.com/kamalyes/go-config/pkg/jobs"
 	"github.com/kamalyes/go-toolbox/pkg/breaker"
 	"github.com/kamalyes/go-toolbox/pkg/idgen"
@@ -714,13 +716,15 @@ func (c *CronScheduler) startJob(entry *Entry) {
 			c.metrics.RecordStart(entry.JobName)
 		}
 
-		// 分布式锁
-		unlock, acquired := c.AcquireDistributedLock(ctx, entry.JobName, start)
-		if !acquired {
-			return
-		}
-		if unlock != nil {
-			defer unlock()
+		// 分布式锁：仅当 OverlapPrevent=true 时加锁，防止任务重叠执行
+		if entry.Config.OverlapPrevent {
+			unlock, acquired := c.AcquireDistributedLock(ctx, entry.JobName)
+			if !acquired {
+				return
+			}
+			if unlock != nil {
+				defer unlock()
+			}
 		}
 
 		// 创建执行快照
@@ -1129,20 +1133,39 @@ func (c *CronScheduler) RecordMetrics(jobName string, duration time.Duration, er
 
 // AcquireDistributedLock 获取分布式锁（公有方法）
 // 返回值：解锁函数, 是否成功获取锁
-func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName string, start time.Time) (func(), bool) {
-	if !c.distributed || c.schedulerCache == nil {
+//
+// 只要 schedulerCache 不为空就生效（不依赖 distributed 标志），
+// 这样非分布式模式（未启用节点注册/PubSub）也能通过 Redis 锁防止同 Pod 内任务重叠
+func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName string) (func(), bool) {
+	if c.schedulerCache == nil {
 		return func() {}, true
 	}
 
-	lockKey := fmt.Sprintf(RedisKeyTemplateExecLock, jobName, start.Unix())
+	// 使用 jobName 作为锁 key，确保同一任务在集群中只有一个 Pod 能执行
+	lockKey := RedisKeyJobLockPrefix + jobName
 	lock := c.schedulerCache.GetLockManager().GetLock(lockKey)
 
-	if err := lock.Lock(ctx); err != nil {
+	// 非阻塞 TryLock：抢锁失败立即跳过本轮调度
+	// 避免阻塞式 Lock 导致多个 Pod 串行执行同一任务（任务重叠）
+	acquired, err := lock.TryLock(ctx)
+	if err != nil {
 		c.logger.Warnf("[分布式锁] 任务 %s 获取锁失败，跳过执行: %v", jobName, err)
 		return nil, false
 	}
+	if !acquired {
+		c.logger.Infof("[分布式锁] 任务 %s 锁被其他节点持有，跳过本轮执行", jobName)
+		return nil, false
+	}
 
-	return func() { lock.Unlock(ctx) }, true
+	return func() {
+		if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+			// ErrLockNotFound 表示锁已过期或被清理，属于正常情况，静默跳过
+			if errors.Is(unlockErr, cachex.ErrLockNotFound) {
+				return
+			}
+			c.logger.Warnf("[分布式锁] 任务 %s 释放锁异常: %v", jobName, unlockErr)
+		}
+	}, true
 }
 
 // registerNode 注册节点信息
@@ -1151,19 +1174,10 @@ func (c *CronScheduler) registerNode(ctx context.Context) error {
 		return nil
 	}
 
+	// nodeRegistry.Start → register → UpdateRunningJobs 已通过 SmartCache 存储完整的 *NodeInfo
+	// （含 nodeID、host、startTime、lastHeartbeat、runningJobs），无需再次覆盖写入
 	if err := c.nodeRegistry.Start(ctx); err != nil {
 		return fmt.Errorf("%w: %w", ErrNodeRegisterFailed, err)
-	}
-
-	if c.schedulerCache != nil {
-		nodeInfo := map[string]interface{}{
-			"node_id":    c.nodeRegistry.nodeID,
-			"started_at": time.Now(),
-			"status":     "running",
-		}
-		if err := c.schedulerCache.SetNodeInfo(ctx, c.nodeRegistry.nodeID, nodeInfo); err != nil {
-			c.logger.Warnf("注册节点信息到缓存失败: %v", err)
-		}
 	}
 
 	// 订阅任务配置变更事件（使用独立的 PubSub 客户端）
