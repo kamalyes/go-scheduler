@@ -14,10 +14,12 @@ package scheduler
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/kamalyes/go-cachex"
 	"github.com/kamalyes/go-config/pkg/jobs"
 	"github.com/kamalyes/go-toolbox/pkg/breaker"
 	"github.com/kamalyes/go-toolbox/pkg/idgen"
@@ -715,7 +717,7 @@ func (c *CronScheduler) startJob(entry *Entry) {
 		}
 
 		// 分布式锁
-		unlock, acquired := c.AcquireDistributedLock(ctx, entry.JobName, start)
+		unlock, acquired := c.AcquireDistributedLock(ctx, entry.JobName)
 		if !acquired {
 			return
 		}
@@ -1129,20 +1131,40 @@ func (c *CronScheduler) RecordMetrics(jobName string, duration time.Duration, er
 
 // AcquireDistributedLock 获取分布式锁（公有方法）
 // 返回值：解锁函数, 是否成功获取锁
-func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName string, start time.Time) (func(), bool) {
+//
+// 修复说明：
+// 1. 锁 key 不再包含时间戳，避免跨 Pod 因 time.Now() 跨秒边界导致锁 key 不一致而无法互斥
+// 2. 使用非阻塞 TryLock 替代阻塞 Lock，抢锁失败立即跳过，避免多 Pod 串行执行同一任务
+func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName string) (func(), bool) {
 	if !c.distributed || c.schedulerCache == nil {
 		return func() {}, true
 	}
 
-	lockKey := fmt.Sprintf(RedisKeyTemplateExecLock, jobName, start.Unix())
+	// 使用 jobName 作为锁 key，确保同一任务在集群中只有一个 Pod 能执行
+	lockKey := RedisKeyJobLockPrefix + jobName
 	lock := c.schedulerCache.GetLockManager().GetLock(lockKey)
 
-	if err := lock.Lock(ctx); err != nil {
+	// 非阻塞 TryLock：抢锁失败立即跳过本轮调度
+	// 避免阻塞式 Lock 导致多个 Pod 串行执行同一任务（任务重叠）
+	acquired, err := lock.TryLock(ctx)
+	if err != nil {
 		c.logger.Warnf("[分布式锁] 任务 %s 获取锁失败，跳过执行: %v", jobName, err)
 		return nil, false
 	}
+	if !acquired {
+		c.logger.Infof("[分布式锁] 任务 %s 锁被其他节点持有，跳过本轮执行", jobName)
+		return nil, false
+	}
 
-	return func() { lock.Unlock(ctx) }, true
+	return func() {
+		if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+			// ErrLockNotFound 表示锁已过期或被清理，属于正常情况，静默跳过
+			if errors.Is(unlockErr, cachex.ErrLockNotFound) {
+				return
+			}
+			c.logger.Warnf("[分布式锁] 任务 %s 释放锁异常: %v", jobName, unlockErr)
+		}
+	}, true
 }
 
 // registerNode 注册节点信息

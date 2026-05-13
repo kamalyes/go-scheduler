@@ -294,7 +294,7 @@ func TestCronWithSeconds(t *testing.T) {
 
 // TestCronChain 测试任务链
 func TestCronChain(t *testing.T) {
-	executed := false
+	var executed atomic.Bool
 
 	chain := NewChain(
 		Recover(nil),
@@ -303,7 +303,7 @@ func TestCronChain(t *testing.T) {
 	c := New(WithCronChain(chain))
 
 	c.AddFunc("* * * * * *", func() {
-		executed = true
+		executed.Store(true)
 	})
 
 	c.Start()
@@ -312,5 +312,5 @@ func TestCronChain(t *testing.T) {
 	// 优化：从 1500ms 减少到 1100ms
 	time.Sleep(1100 * time.Millisecond)
 
-	assert.True(t, executed)
+	assert.True(t, executed.Load())
 }
