@@ -13,6 +13,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kamalyes/go-cachex"
@@ -53,6 +54,11 @@ func WithCachexLock(lockMgr *cachex.LockManager, log Logger) JobWrapper {
 				// 确保释放锁，记录释放异常（不影响任务执行结果）
 				defer func() {
 					if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+						// ErrLockNotFound/ErrLockNotOwned 表示锁已过期、被清理或所有权丢失，
+						// 均属于看门狗续期失败后的正常情况，静默跳过避免噪音日志
+						if errors.Is(unlockErr, cachex.ErrLockNotFound) || errors.Is(unlockErr, cachex.ErrLockNotOwned) {
+							return
+						}
 						log.WarnContext(ctx, "分布式锁释放异常: %s, err=%v", j.Name(), unlockErr)
 					}
 				}()
