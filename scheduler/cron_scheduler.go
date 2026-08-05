@@ -718,13 +718,14 @@ func (c *CronScheduler) startJob(entry *Entry) {
 
 		// 分布式锁：仅当 OverlapPrevent=true 时加锁，防止任务重叠执行
 		if entry.Config.OverlapPrevent {
-			unlock, acquired := c.AcquireDistributedLock(ctx, entry.JobName)
+			unlock, acquired, lockCtx := c.AcquireDistributedLock(ctx, entry.JobName)
 			if !acquired {
 				return
 			}
 			if unlock != nil {
 				defer unlock()
 			}
+			ctx = lockCtx
 		}
 
 		// 创建执行快照
@@ -1132,13 +1133,15 @@ func (c *CronScheduler) RecordMetrics(jobName string, duration time.Duration, er
 }
 
 // AcquireDistributedLock 获取分布式锁（公有方法）
-// 返回值：解锁函数, 是否成功获取锁
+// 返回值：解锁函数, 是否成功获取锁, 可取消的任务 context
 //
 // 只要 schedulerCache 不为空就生效（不依赖 distributed 标志），
 // 这样非分布式模式（未启用节点注册/PubSub）也能通过 Redis 锁防止同 Pod 内任务重叠
-func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName string) (func(), bool) {
+//
+// 看门狗续期失败时自动取消 context，防止锁过期后另一个 Pod 抢锁成功导致两个 Pod 同时执行
+func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName string) (func(), bool, context.Context) {
 	if c.schedulerCache == nil {
-		return func() {}, true
+		return func() {}, true, ctx
 	}
 
 	// 使用 jobName 作为锁 key，确保同一任务在集群中只有一个 Pod 能执行
@@ -1150,22 +1153,35 @@ func (c *CronScheduler) AcquireDistributedLock(ctx context.Context, jobName stri
 	acquired, err := lock.TryLock(ctx)
 	if err != nil {
 		c.logger.Warnf("[分布式锁] 任务 %s 获取锁失败，跳过执行: %v", jobName, err)
-		return nil, false
+		return nil, false, ctx
 	}
 	if !acquired {
 		c.logger.Infof("[分布式锁] 任务 %s 锁被其他节点持有，跳过本轮执行", jobName)
-		return nil, false
+		return nil, false, ctx
 	}
 
+	// 创建可取消的 context：看门狗续期失败时自动取消任务，
+	// 防止锁过期后另一个 Pod 抢锁成功导致两个 Pod 同时执行同一任务
+	taskCtx, cancel := context.WithCancel(ctx)
+
+	lock.OnAfterExtend(func(_ context.Context, extendErr error) {
+		if extendErr != nil {
+			c.logger.Warnf("[分布式锁] 任务 %s 看门狗续期失败，取消任务以防止互斥失效", jobName)
+			cancel()
+		}
+	})
+
 	return func() {
+		cancel()
 		if unlockErr := lock.Unlock(ctx); unlockErr != nil {
-			// ErrLockNotFound 表示锁已过期或被清理，属于正常情况，静默跳过
-			if errors.Is(unlockErr, cachex.ErrLockNotFound) {
+			// ErrLockNotFound/ErrLockNotOwned 表示锁已过期、被清理或所有权丢失，
+			// 均属于看门狗续期失败后的正常情况，静默跳过避免噪音日志
+			if errors.Is(unlockErr, cachex.ErrLockNotFound) || errors.Is(unlockErr, cachex.ErrLockNotOwned) {
 				return
 			}
 			c.logger.Warnf("[分布式锁] 任务 %s 释放锁异常: %v", jobName, unlockErr)
 		}
-	}, true
+	}, true, taskCtx
 }
 
 // registerNode 注册节点信息

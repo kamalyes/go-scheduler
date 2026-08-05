@@ -13,6 +13,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kamalyes/go-cachex"
@@ -50,15 +51,31 @@ func WithCachexLock(lockMgr *cachex.LockManager, log Logger) JobWrapper {
 					return nil
 				}
 
+				// 创建可取消的 context：看门狗续期失败时自动取消任务，
+				// 防止锁过期后另一个 Pod 抢锁成功导致两个 Pod 同时执行同一任务
+				taskCtx, cancel := context.WithCancel(ctx)
+				lock.OnAfterExtend(func(_ context.Context, extendErr error) {
+					if extendErr != nil {
+						log.WarnContext(ctx, "分布式锁看门狗续期失败，取消任务: %s, err=%v", j.Name(), extendErr)
+						cancel()
+					}
+				})
+
 				// 确保释放锁，记录释放异常（不影响任务执行结果）
 				defer func() {
+					cancel()
 					if unlockErr := lock.Unlock(ctx); unlockErr != nil {
+						// ErrLockNotFound/ErrLockNotOwned 表示锁已过期、被清理或所有权丢失，
+						// 均属于看门狗续期失败后的正常情况，静默跳过避免噪音日志
+						if errors.Is(unlockErr, cachex.ErrLockNotFound) || errors.Is(unlockErr, cachex.ErrLockNotOwned) {
+							return
+						}
 						log.WarnContext(ctx, "分布式锁释放异常: %s, err=%v", j.Name(), unlockErr)
 					}
 				}()
 
 				// 执行任务(LockManager 自动处理看门狗续期)
-				return j.Execute(ctx)
+				return j.Execute(taskCtx)
 			},
 		}
 	}
