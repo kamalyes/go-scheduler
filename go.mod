@@ -4,11 +4,11 @@ go 1.25.0
 
 require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
-	github.com/kamalyes/go-cachex v0.3.3
+	github.com/kamalyes/go-cachex v0.3.4
 	github.com/kamalyes/go-config v0.21.11
-	github.com/kamalyes/go-logger v0.5.6
-	github.com/kamalyes/go-sqlbuilder v0.6.0
-	github.com/kamalyes/go-toolbox v0.15.7
+	github.com/kamalyes/go-logger v0.5.7
+	github.com/kamalyes/go-sqlbuilder v0.6.2
+	github.com/kamalyes/go-toolbox v0.15.8
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478

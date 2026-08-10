@@ -85,22 +85,22 @@ func NewSchedulerCache(redisClient redis.UniversalClient) *SchedulerCache {
 		Build()
 
 	// 分布式锁管理器(用于任务执行)
-	lockMgr := cachex.NewLockManager(redisClient, cachex.LockConfig{
-		TTL:              30 * time.Second,
-		RetryInterval:    100 * time.Millisecond,
-		MaxRetries:       10,
-		Namespace:        namespace + ":job",
-		EnableWatchdog:   true,
-		WatchdogInterval: 10 * time.Second,
-	})
+	lockMgr := cachex.NewLockManager(redisClient,
+		cachex.WithLockTTL(30*time.Second),
+		cachex.WithLockRetryInterval(100*time.Millisecond),
+		cachex.WithLockMaxRetries(10),
+		cachex.WithLockNamespace(namespace+":job"),
+		cachex.WithLockWatchdog(true),
+		cachex.WithLockWatchdogInterval(10*time.Second),
+	)
 
 	// PubSub(用于分布式事件通知)
-	pubsubInst := cachex.NewPubSub(redisClient, cachex.PubSubConfig{
-		Namespace:  namespace,
-		MaxRetries: 3,
-		RetryDelay: 100 * time.Millisecond,
-		BufferSize: 100,
-	})
+	pubsubInst := cachex.NewPubSub(redisClient,
+		cachex.WithPubSubNamespace(namespace),
+		cachex.WithPubSubMaxRetries(3),
+		cachex.WithPubSubRetryDelay(100*time.Millisecond),
+		cachex.WithPubSubBufferSize(100),
+	)
 
 	return &SchedulerCache{
 		redis:     redisClient,
